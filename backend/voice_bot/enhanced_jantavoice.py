@@ -42,7 +42,7 @@ class VoiceComplaintHandler:
             
             # Ensure required fields are present
             if not mapped_data["name"]:
-                mapped_data["name"] = "Anonymous"
+                mapped_data["name"] = "Kunal thakare"
             if not mapped_data["description"]:
                 mapped_data["description"] = "Voice complaint recorded"
             if not mapped_data["location"]:

@@ -44,7 +44,7 @@ def listen_hindi(timeout=5, phrase_time_limit=7):
         print(f"आपने कहा: {text}")
         return text
     except (sr.UnknownValueError, sr.RequestError) as e:
-        speak_hindi("खेद है, समस्या हुई। कृपया पुनः प्रयास करें।")
+        # speak_hindi("खेद है, समस्या हुई। कृपया पुनः प्रयास करें।")
         return None
 
 

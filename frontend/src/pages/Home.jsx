@@ -16,34 +16,34 @@ const Home = () => {
     <div className="absolute inset-0 overflow-hidden pointer-events-none">
       {/* Soft Mesh Gradient Background */}
       <div className="absolute inset-0 "></div>
-      
+
       {/* Animated Orbs with softer movements and colors */}
-      <div 
-        className="absolute top-1/4 left-1/4 w-96 h-96 bg-gradient-to-r from-blue-300/20 to-purple-300/20 rounded-full blur-3xl animate-gentle-float animate-morph" 
-        style={{ transform: `translate(${scrollY * 0.1}px, ${scrollY * 0.05}px)` }} 
+      <div
+        className="absolute top-1/4 left-1/4 w-96 h-96 bg-gradient-to-r from-blue-300/20 to-purple-300/20 rounded-full blur-3xl animate-gentle-float animate-morph"
+        style={{ transform: `translate(${scrollY * 0.1}px, ${scrollY * 0.05}px)` }}
       />
-      <div 
-        className="absolute top-3/4 right-1/4 w-80 h-80 bg-gradient-to-r from-green-300/20 to-blue-300/20 rounded-full blur-3xl animate-gentle-float animate-morph" 
-        style={{ transform: `translate(${scrollY * -0.1}px, ${scrollY * 0.08}px)`, animationDelay: '2s' }} 
+      <div
+        className="absolute top-3/4 right-1/4 w-80 h-80 bg-gradient-to-r from-green-300/20 to-blue-300/20 rounded-full blur-3xl animate-gentle-float animate-morph"
+        style={{ transform: `translate(${scrollY * -0.1}px, ${scrollY * 0.08}px)`, animationDelay: '2s' }}
       />
-      <div 
-        className="absolute top-1/2 left-3/4 w-64 h-64 bg-gradient-to-r from-purple-300/20 to-pink-300/20 rounded-full blur-2xl animate-gentle-float animate-morph" 
-        style={{ transform: `translate(${scrollY * 0.15}px, ${scrollY * -0.1}px)`, animationDelay: '1s' }} 
+      <div
+        className="absolute top-1/2 left-3/4 w-64 h-64 bg-gradient-to-r from-purple-300/20 to-pink-300/20 rounded-full blur-2xl animate-gentle-float animate-morph"
+        style={{ transform: `translate(${scrollY * 0.15}px, ${scrollY * -0.1}px)`, animationDelay: '1s' }}
       />
-      
+
       {/* Minimalist Grid Pattern */}
       <div className="absolute inset-0 opacity-5">
         <div className="grid grid-cols-20 gap-8 h-full w-full">
           {[...Array(200)].map((_, i) => (
-            <div 
-              key={i} 
-              className="w-1 h-1 bg-gray-400 rounded-full animate-grid-sparkle" 
-              style={{ animationDelay: `${Math.random() * 3}s` }} 
+            <div
+              key={i}
+              className="w-1 h-1 bg-gray-400 rounded-full animate-grid-sparkle"
+              style={{ animationDelay: `${Math.random() * 3}s` }}
             />
           ))}
         </div>
       </div>
-      
+
       {/* Softer, Dynamic Particles */}
       {[...Array(15)].map((_, i) => (
         <div
@@ -56,12 +56,11 @@ const Home = () => {
             animationDuration: `${4 + Math.random() * 3}s`,
           }}
         >
-          <div className={`w-${Math.random() > 0.5 ? '2' : '3'} h-${Math.random() > 0.5 ? '2' : '3'} bg-gradient-to-r ${
-            ['from-blue-200 to-purple-200', 'from-green-200 to-blue-200', 'from-purple-200 to-pink-200'][Math.floor(Math.random() * 3)]
-          } rounded-full opacity-60 animate-particle-glow`} />
+          <div className={`w-${Math.random() > 0.5 ? '2' : '3'} h-${Math.random() > 0.5 ? '2' : '3'} bg-gradient-to-r ${['from-blue-200 to-purple-200', 'from-green-200 to-blue-200', 'from-purple-200 to-pink-200'][Math.floor(Math.random() * 3)]
+            } rounded-full opacity-60 animate-particle-glow`} />
         </div>
       ))}
-      
+
     </div>
   );
 
@@ -262,10 +261,10 @@ const Home = () => {
       `}</style>
 
       <FloatingElements />
-      
-      
-          
-        
+
+
+
+
 
       {/* Hero Section */}
       <div className="relative z-10 px-2 pt-20 pb-20">
@@ -274,16 +273,16 @@ const Home = () => {
           <div className="animate-fade-in mb-12">
             <div className="inline-block mb-6">
               <span className="bg-gradient-to-r from-blue-600 to-purple-600 text-white text-lg font-semibold px-6 py-3 rounded-full shadow-lg hover:scale-105 transition-transform duration-300">
-               आवाज़-संचालित शिकायत मंच
+                आवाज़-संचालित शिकायत मंच
               </span>
             </div>
-            
+
             <h2 className="text-6xl md:text-8xl font-black mb-8 leading-tight hover-lift">
               <span className="gradient-text animate-text-glow">Janta Voice</span>
             </h2>
-            
+
             <p className="text-xl md:text-2xl text-gray-700 max-w-4xl mx-auto mb-4 leading-relaxed animate-fade-in">
-              क्रांतिकारी आवाज़-संचालित शिकायत प्रणाली, 
+              क्रांतिकारी आवाज़-संचालित शिकायत प्रणाली,
               <span className="text-blue-600 font-semibold"> जो आपकी चिंताओं को कार्रवाई में बदलती है</span>
             </p>
             <p className="text-gray-500 max-w-2xl mx-auto animate-pulse-soft">
@@ -293,8 +292,8 @@ const Home = () => {
 
           {/* CTA Buttons */}
           <div className="flex flex-col sm:flex-row gap-6 justify-center items-center mb-20 animate-slide-up_2.0s" style={{ animationDelay: '0.1s' }}>
-            <button 
-              onClick={() => navigate('/user-options')}
+            <button
+              onClick={() => navigate("/login")}
               className="group relative bg-gradient-to-r from-blue-600 to-blue-700 px-12 py-5 rounded-2xl text-xl font-bold shadow-2xl transition-all duration-500 hover:scale-110 hover:shadow-blue-500/25 min-w-[250px] overflow-hidden hover-lift animate-soft-glow"
             >
               <div className="absolute inset-0 bg-gradient-to-r from-blue-400 to-purple-400 opacity-0 group-hover:opacity-100 transition-opacity duration-500"></div>
@@ -306,9 +305,10 @@ const Home = () => {
               </span>
             </button>
 
-            <button 
+
+            <button
               onClick={() => navigate('/admin-login')}
-              className="group relative bg-gradient-to-r from-green-600 to-teal-600 px-12 py-5 rounded-2xl text-xl font-bold shadow-2xl transition-all duration-500 hover:scale-110 hover:shadow-green-500/25 min-w-[250px] overflow-hidden hover-lift animate-soft-glow" 
+              className="group relative bg-gradient-to-r from-green-600 to-teal-600 px-12 py-5 rounded-2xl text-xl font-bold shadow-2xl transition-all duration-500 hover:scale-110 hover:shadow-green-500/25 min-w-[250px] overflow-hidden hover-lift animate-soft-glow"
               style={{ animationDelay: '0.5s' }}
             >
               <div className="absolute inset-0 bg-gradient-to-r from-green-400 to-teal-400 opacity-0 group-hover:opacity-100 transition-opacity duration-500"></div>
@@ -328,7 +328,7 @@ const Home = () => {
         <div className="max-w-7xl mx-auto">
           <div className="text-center mb-16 animate-slide-up">
             <h3 className="text-5xl font-bold text-gray-800 mb-6">
-             क्यों चुनें  <span className="gradient-text">जनता वॉइस ?</span>
+              क्यों चुनें  <span className="gradient-text">जनता वॉइस ?</span>
             </h3>
             <p className="text-xl text-gray-600 max-w-3xl mx-auto leading-relaxed">
               शिकायत प्रबंधन का भविष्य, नई तकनीक के साथ
@@ -393,10 +393,10 @@ const Home = () => {
                 इसे <span className="gradient-text">चलते देखें</span>
               </h3>
               <p className="text-xl text-gray-600 mb-8 animate-pulse-soft">
-               देखें कैसे जनता वॉइस एक साधारण आवाज़ शिकायत को ठोस परिणामों में बदल देता है
+                देखें कैसे जनता वॉइस एक साधारण आवाज़ शिकायत को ठोस परिणामों में बदल देता है
               </p>
             </div>
-            
+
             <button className="group bg-gradient-to-r from-red-600 to-orange-600 px-10 py-4 rounded-2xl text-lg font-bold shadow-xl transition-all duration-300 hover:scale-105 hover:shadow-red-500/25 hover-lift animate-soft-glow">
               <span className="flex items-center justify-center text-white">
                 <Play className="w-5 h-5 mr-3" />

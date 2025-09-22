@@ -4,14 +4,20 @@ import logging
 import os
 import time
 from datetime import datetime
+# Telegram Bot
+import telegram1
 
-# HuggingFace
+# HuggingFace                                   
 from transformers import pipeline
 
 # Routes
 from routes.complaint_routes import complaint_routes
 from routes.admin_routes import admin_routes
 from routes.voice_routes import voice_routes
+
+from routes.auth import auth_bp
+
+
 
 # Voice Bot
 from voice_bot.enhanced_jantavoice import start_conversation
@@ -39,7 +45,8 @@ app.secret_key = os.environ.get("APP_SECRET_KEY", "super_secret_key_change_later
 # Register Blueprints
 app.register_blueprint(complaint_routes)                 
 app.register_blueprint(admin_routes)                   
-app.register_blueprint(voice_routes)                     
+app.register_blueprint(voice_routes)  
+app.register_blueprint(auth_bp)                 
 
 # ---------------- HuggingFace Model ----------------
 HF_MODEL_NAME = os.environ.get("HF_MODEL_NAME", "bigscience/bloom-560m")
@@ -95,6 +102,67 @@ def health_check():
         "chatbot_model": HF_MODEL_NAME,
         "chatbot_loaded": chatbot is not None
     }), 200
+
+
+# ---------------- Telegram Bot Routes ----------------
+@app.route('/bot/status')
+def bot_status():
+    """Check if Telegram bot is running"""
+    if hasattr(telegram1, 'telegram_app') and telegram1.telegram_app and telegram1.telegram_app.running:
+        return jsonify({
+            "status": "running",
+            "message": "Telegram bot is active",
+            "active_sessions": len(telegram1.user_sessions)
+        })
+    else:
+        return jsonify({
+            "status": "stopped",
+            "message": "Telegram bot is not running"
+        })
+
+@app.route('/bot/sessions')
+def bot_sessions():
+    """Get active Telegram bot sessions"""
+    return jsonify({
+        "active_sessions": len(telegram1.user_sessions),
+        "sessions": {
+            user_id: {
+                "step": session["step"],
+                "data_keys": list(session["data"].keys())
+            }
+            for user_id, session in telegram1.user_sessions.items()
+        }
+    })
+# @app.route('/')
+# def health_check1():
+#     """Basic health check endpoint"""
+#     return {
+#         "status": "healthy",
+#         "message": "Municipality Complaint System API is running",
+#         "features": [
+#             "Smart complaint classification with NLP",
+#             "Multi-language support (Hindi/English)",
+#             "Photo upload with geo-tagging",
+#             "Live location capture",
+#             "Voice-to-text conversion",
+#             "Automatic department routing",
+#             "Priority-based urgency detection"
+#         ]
+#     }
+
+# @app.route('/api/health')
+# def api_health():
+#     """API health check"""
+#     return {"status": "ok", "api_version": "1.0"}
+
+
+@app.errorhandler(404)
+def not_found(error):
+    return {"success": False, "message": "Endpoint not found"}, 404
+
+@app.errorhandler(500)
+def internal_error(error):
+    return {"success": False, "message": "Internal server error"}, 500
 
 @app.route("/api/chat", methods=["POST"])
 def chat():
@@ -190,4 +258,14 @@ if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
     debug_mode = os.environ.get("DEBUG", "True").lower() == "true"
     logger.info(f"🚀 Starting JantaVoice server on port {port}")
+    
+    # try:
+    #     logger.info("🤖 Starting Telegram Bot...")
+    #     bot_thread = telegram1.start_telegram_bot()
+    #     logger.info("✅ Telegram Bot started successfully")
+    # except Exception as e:
+    #     logger.error(f"❌ Failed to start Telegram Bot: {e}")
+    
+    # logger.info(f"🚀 Starting JantaVoice server on port {port}")
+    # logger.info("🌐 Flask Backend + 🤖 Telegram Bot running together")
     app.run(debug=debug_mode, use_reloader=False, host="0.0.0.0", port=port)
