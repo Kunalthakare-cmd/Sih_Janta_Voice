@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 # JantaVoice - Voice Complaint System
 
 ## 🎯 Problem Solved
@@ -116,3 +117,6 @@ Complaints must include:
 ✅ Admin dashboard displays all complaints  
 ✅ System works even without MongoDB (fallback mode)  
 ✅ Proper error handling and logging throughout
+=======
+# Sih_Janta_Voice
+>>>>>>> 8f433477e69dde1c7ce3a35662f9a5fb09fa2134
