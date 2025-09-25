@@ -293,13 +293,14 @@
 #         return jsonify({"success": False, "message": "Failed to fetch complaint", "error": str(e)}), 500
 
 from flask import send_from_directory, Blueprint, request, jsonify, session
-from config import complaints_collection
+from config import complaints_collection, users_collection
 from utils.generate_id import generate_complaint_id, generate_token
 from datetime import datetime
 import os
 import traceback
 import logging
 import re
+import jwt
 from collections import Counter
 
 # Setup logging
@@ -309,6 +310,9 @@ UPLOAD_FOLDER = "uploads"
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 
 complaint_routes = Blueprint("complaint_routes", __name__)
+
+# JWT Secret Key - should match the one in auth.py
+JWT_SECRET_KEY = "your-secret-key-change-in-production"
 
 import re
 
@@ -325,6 +329,117 @@ def hindi_digits_to_int(text):
         return int(result)
     except:
         return None
+
+# Helper function to extract user info from token
+def get_user_from_token(request):
+    """
+    Extract user information from JWT token
+    Returns user data or None if invalid/missing token
+    """
+    try:
+        token = request.headers.get('Authorization')
+        if not token:
+            return None
+        
+        # Remove 'Bearer ' prefix if present
+        if token.startswith('Bearer '):
+            token = token[7:]
+        
+        # Verify token
+        payload = jwt.decode(token, JWT_SECRET_KEY, algorithms=['HS256'])
+        
+        # If it's an admin token, return admin info
+        if payload.get('role') == 'admin':
+            return {
+                'userId': 'admin',
+                'name': 'System Administrator',
+                'email': payload.get('email'),
+                'role': 'admin',
+                'isAdmin': True
+            }
+        
+        # For regular users, get user data from database
+        user_id = payload.get('userId')
+        if not user_id:
+            return None
+        
+        user = users_collection.find_one({"userId": user_id})
+        if not user or not user.get("isActive", True):
+            return None
+            
+        return {
+            'userId': user['userId'],
+            'name': user['name'],
+            'email': user['email'],
+            'phone': user.get('phone'),
+            'address': user.get('address'),
+            'role': user.get('role', 'user'),
+            'isAdmin': False
+        }
+        
+    except jwt.ExpiredSignatureError:
+        logger.warning("Expired token provided")
+        return None
+    except jwt.InvalidTokenError:
+        logger.warning("Invalid token provided")
+        return None
+    except Exception as e:
+        logger.error(f"Token verification error: {str(e)}")
+        return None
+
+# NEW: Get User Profile Endpoint
+@complaint_routes.route("/api/user/profile", methods=["GET"])
+def get_user_profile():
+    """
+    Get authenticated user's profile information
+    """
+    try:
+        # Get user information from token
+        user_info = get_user_from_token(request)
+        
+        if not user_info or not user_info['userId']:
+            return jsonify({"success": False, "message": "Authentication required"}), 401
+
+        # Get fresh user data from database
+        if user_info['userId'] != 'admin':  # Don't query DB for admin
+            user = users_collection.find_one(
+                {"userId": user_info['userId']}, 
+                {"passwordHash": 0}  # Exclude password hash
+            )
+            if not user:
+                return jsonify({"success": False, "message": "User not found"}), 404
+
+            # Clean up user data
+            user.pop('_id', None)
+            if user.get('createdAt'):
+                user['createdAt'] = user['createdAt'].isoformat()
+            if user.get('lastLoginAt'):
+                user['lastLoginAt'] = user['lastLoginAt'].isoformat()
+            
+            return jsonify({
+                "success": True,
+                "user": user
+            }), 200
+        else:
+            # Return admin info
+            return jsonify({
+                "success": True,
+                "user": {
+                    "userId": "admin",
+                    "name": "System Administrator", 
+                    "email": user_info['email'],
+                    "role": "admin",
+                    "isAdmin": True
+                }
+            }), 200
+
+    except Exception as e:
+        logger.error(f"User profile fetch error: {str(e)}")
+        return jsonify({
+            "success": False, 
+            "message": "Failed to fetch user profile", 
+            "error": str(e)
+        }), 500
 
 def analyze_complaint(complaint_text, location=""):
     """
@@ -419,7 +534,6 @@ def analyze_complaint(complaint_text, location=""):
         }
     }
 
-
 # Get estimated resolution time
 def get_estimated_resolution_time(urgency):
     """Get estimated resolution time based on urgency"""
@@ -460,9 +574,25 @@ def _to_float(v):
 @complaint_routes.route("/api/complaint", methods=["POST"])
 def submit_complaint():
     """
-    Handles complaint submissions with NLP analysis and smart routing
+    Handles complaint submissions with NLP analysis, smart routing, and user authentication
     """
     try:
+        # Get user information from token
+        user_info = get_user_from_token(request)
+        
+        # For backwards compatibility, allow anonymous complaints but log a warning
+        if not user_info:
+            logger.warning("Anonymous complaint submission - consider requiring authentication")
+            user_info = {
+                'userId': None,
+                'name': 'Anonymous User',
+                'email': None,
+                'phone': None,
+                'address': None,
+                'role': 'anonymous',
+                'isAdmin': False
+            }
+
         complaint_id = generate_complaint_id()
         token = generate_token()
         
@@ -470,7 +600,8 @@ def submit_complaint():
         if request.content_type and request.content_type.startswith("multipart/form-data"):
             complaint_text = request.form.get("complaint", "")
             location = request.form.get("location", "")
-            name = request.form.get("name", "Kunal Thakare")  # Added name field
+            # Use authenticated user's name, fallback to form data, then default
+            name = user_info['name'] or request.form.get("name", "Anonymous User")
             latitude = _to_float(request.form.get("latitude"))
             longitude = _to_float(request.form.get("longitude"))
             
@@ -490,10 +621,19 @@ def submit_complaint():
                 "id": complaint_id,
                 "token": token,
                 "type": "form",
-                "name": name,  # Dashboard compatibility
+                
+                # User Information
+                "userId": user_info['userId'],
+                "name": name,
+                "email": user_info['email'],
+                "phone": user_info['phone'],
+                "userAddress": user_info['address'],  # User's registered address
+                "userRole": user_info['role'],
+                
+                # Complaint Details
                 "complaint": complaint_text,
                 "description": complaint_text,  # Dashboard compatibility
-                "location": location,
+                "location": location,  # Complaint location (different from user address)
                 "latitude": latitude,
                 "longitude": longitude,
                 "photoUrl": photo_url,
@@ -511,7 +651,8 @@ def submit_complaint():
                 # Additional metadata
                 "has_photo": bool(photo_file),
                 "has_geo_location": bool(latitude and longitude),
-                "auto_classified": True
+                "auto_classified": True,
+                "is_authenticated": bool(user_info['userId'])
             }
 
         else:
@@ -522,7 +663,8 @@ def submit_complaint():
 
             complaint_text = complaint_data.get("complaint") or complaint_data.get("description", "")
             location = complaint_data.get("location", "")
-            name = complaint_data.get("name", "Kunal Thakare")  # Added name field
+            # Use authenticated user's name, fallback to request data, then default
+            name = user_info['name'] or complaint_data.get("name", "Anonymous User")
             
             # Perform NLP analysis
             analysis = analyze_complaint(complaint_text, location)
@@ -531,7 +673,16 @@ def submit_complaint():
                 "id": complaint_id,
                 "token": token,
                 "type": "json",
-                "name": name,  # Dashboard compatibility
+                
+                # User Information
+                "userId": user_info['userId'],
+                "name": name,
+                "email": user_info['email'],
+                "phone": user_info['phone'],
+                "userAddress": user_info['address'],
+                "userRole": user_info['role'],
+                
+                # Complaint Details
                 "complaint": complaint_text,
                 "description": complaint_text,  # Dashboard compatibility
                 "location": location,
@@ -551,7 +702,8 @@ def submit_complaint():
                 # Additional metadata
                 "has_photo": False,
                 "has_geo_location": bool(complaint_data.get("latitude") and complaint_data.get("longitude")),
-                "auto_classified": not bool(complaint_data.get("department"))  # False if department was provided
+                "auto_classified": not bool(complaint_data.get("department")),
+                "is_authenticated": bool(user_info['userId'])
             }
 
         # Check if database is available
@@ -573,7 +725,8 @@ def submit_complaint():
         inserted = complaints_collection.insert_one(complaint)
         
         # Log for admin dashboard
-        logger.info(f"New complaint {complaint_id}: {complaint.get('department')} ({complaint.get('urgency')}) - {complaint_text[:100]}...")
+        user_identifier = user_info['name'] if user_info['name'] != 'Anonymous User' else 'Anonymous'
+        logger.info(f"New complaint {complaint_id} by {user_identifier}: {complaint.get('department')} ({complaint.get('urgency')}) - {complaint_text[:100]}...")
         
         return jsonify({
             "success": True,
@@ -582,6 +735,7 @@ def submit_complaint():
             "token": token,  # Keep this for backward compatibility
             "complaint": {
                 "complaintId": complaint_id,
+                "submittedBy": user_info['name'],
                 "department": complaint.get('department'),
                 "urgency": complaint.get('urgency'),
                 "estimatedResolutionTime": complaint.get('estimated_resolution'),
@@ -603,16 +757,27 @@ def submit_complaint():
 @complaint_routes.route("/api/complaint/women-child", methods=["POST"])
 def submit_women_child_complaint():
     """
-    Dedicated endpoint for Women & Child complaints with priority handling
+    Dedicated endpoint for Women & Child complaints with priority handling and user authentication
     """
     try:
+        # Get user information from token
+        user_info = get_user_from_token(request)
+        
+        # For women-child complaints, we strongly recommend authentication
+        if not user_info or not user_info['userId']:
+            return jsonify({
+                "success": False, 
+                "message": "Authentication required for women & child complaints"
+            }), 401
+
         complaint_id = generate_complaint_id()
         token = generate_token()
 
         if request.content_type and request.content_type.startswith("multipart/form-data"):
             complaint_text = request.form.get("text") or request.form.get("description", "")
             location = request.form.get("location", "")
-            name = request.form.get("name", "Kunal Thakare")  # Added name field
+            # Use authenticated user's name
+            name = user_info['name']
             
             voice_file = request.files.get("voice")
             photo_file = request.files.get("photo")
@@ -636,21 +801,31 @@ def submit_women_child_complaint():
                 "token": token,
                 "type": "women-child",
                 "category": "Women-Child",
-                "name": name,  # Dashboard compatibility
+                
+                # User Information
+                "userId": user_info['userId'],
+                "name": name,
+                "email": user_info['email'],
+                "phone": user_info['phone'],
+                "userAddress": user_info['address'],
+                "userRole": user_info['role'],
+                
+                # Complaint Details
                 "complaint": complaint_text,
                 "description": complaint_text,  # Dashboard compatibility
                 "location": location,
                 "latitude": _to_float(request.form.get("latitude")),
                 "longitude": _to_float(request.form.get("longitude")),
-                "department": "women-child",
+                "department": "महिला एवं बाल विभाग",
                 "urgency": "high",  # Always high priority
-                "timestamp":datetime.now(),
+                "timestamp": datetime.now(),
                 "status": "Pending",
                 "voice_path": voice_path,
                 "photoUrl": photo_url,
                 "priority": "critical",
                 "confidential": True,
-                "estimated_resolution": "1-2 hours"
+                "estimated_resolution": "1-2 hours",
+                "is_authenticated": True
             }
 
         else:
@@ -660,25 +835,35 @@ def submit_women_child_complaint():
                 "token": token,
                 "type": "women-child",
                 "category": "Women-Child",
-                "name": complaint_data.get("name", "Kunal Thakare"),  # Dashboard compatibility
+                
+                # User Information
+                "userId": user_info['userId'],
+                "name": user_info['name'],
+                "email": user_info['email'],
+                "phone": user_info['phone'],
+                "userAddress": user_info['address'],
+                "userRole": user_info['role'],
+                
+                # Complaint Details
                 "complaint": complaint_data.get("description", ""),
                 "description": complaint_data.get("description", ""),  # Dashboard compatibility
                 "location": complaint_data.get("location", ""),
                 "latitude": _to_float(complaint_data.get("latitude")),
                 "longitude": _to_float(complaint_data.get("longitude")),
-                "department": "women-child",
+                "department": "महिला एवं बाल विभाग",
                 "urgency": "high",
                 "timestamp": datetime.now(),
                 "status": "Pending",
                 "priority": "critical",
                 "confidential": True,
-                "estimated_resolution": "1-2 hours"
+                "estimated_resolution": "1-2 hours",
+                "is_authenticated": True
             }
         
         inserted = complaints_collection.insert_one(complaint)
         
         # Immediate notification for women-child complaints
-        logger.critical(f"URGENT: Women-Child complaint {complaint_id} submitted - {complaint_text[:50]}...")
+        logger.critical(f"URGENT: Women-Child complaint {complaint_id} by {user_info['name']} - {complaint_text[:50]}...")
 
         return jsonify({
             "success": True,
@@ -687,7 +872,8 @@ def submit_women_child_complaint():
             "token": token,  # Keep for backward compatibility
             "complaint": {
                 "complaintId": complaint_id,
-                "department": "women-child",
+                "submittedBy": user_info['name'],
+                "department": "महिला एवं बाल विभाग",
                 "urgency": "high",
                 "priority": "critical",
                 "estimatedResolutionTime": "1-2 hours",
@@ -704,16 +890,99 @@ def submit_women_child_complaint():
             "error": str(e)
         }), 500
 
+# UPDATED: Get User's Complaints with proper pagination and filtering
+@complaint_routes.route("/api/user/complaints", methods=["GET"])
+def get_user_complaints():
+    """
+    Get all complaints submitted by the authenticated user with enhanced filtering
+    """
+    try:
+        # Get user information from token
+        user_info = get_user_from_token(request)
+        
+        if not user_info or not user_info['userId']:
+            return jsonify({"success": False, "message": "Authentication required"}), 401
+
+        # Get query parameters
+        page = int(request.args.get('page', 1))
+        limit = min(int(request.args.get('limit', 10)), 100)  # Cap at 100
+        status = request.args.get('status')
+        department = request.args.get('department')
+        urgency = request.args.get('urgency')
+        
+        # Build query for user's complaints
+        query = {"userId": user_info['userId']}
+        if status and status != 'all':
+            query['status'] = status
+        if department and department != 'all':
+            query['department'] = department  
+        if urgency and urgency != 'all':
+            query['urgency'] = urgency
+
+        # Get total count
+        total_count = complaints_collection.count_documents(query)
+        
+        # Get complaints with pagination
+        complaints = list(complaints_collection.find(query, {'token': 0})  # Exclude token
+                         .sort("timestamp", -1)
+                         .skip((page - 1) * limit)
+                         .limit(limit))
+
+        # Clean up complaints for response
+        for complaint in complaints:
+            complaint.pop('_id', None)
+            if complaint.get('timestamp'):
+                complaint['timestamp'] = complaint['timestamp'].isoformat()
+                # Add createdAt for frontend compatibility
+                complaint['createdAt'] = complaint['timestamp']
+
+        return jsonify({
+            "success": True,
+            "complaints": complaints,
+            "user": {
+                "name": user_info['name'],
+                "email": user_info['email'],
+                "userId": user_info['userId']
+            },
+            "pagination": {
+                "total_count": total_count,
+                "page": page,
+                "limit": limit,
+                "total_pages": (total_count + limit - 1) // limit
+            }
+        }), 200
+
+    except Exception as e:
+        logger.error(f"User complaints fetch error: {str(e)}")
+        return jsonify({
+            "success": False, 
+            "message": "Failed to fetch complaints", 
+            "error": str(e)
+        }), 500
+
 # ------------------ Get Complaint Status (Enhanced) ------------------
 @complaint_routes.route("/api/complaint/<complaint_id>", methods=["GET"])
 def get_complaint_status(complaint_id):
     """
     Retrieves a single complaint by its ID with full analysis data
+    Enhanced with user verification
     """
     try:
         complaint = complaints_collection.find_one({"id": complaint_id})
         if not complaint:
             return jsonify({"success": False, "message": "Complaint not found"}), 404
+
+        # Get user information from token
+        user_info = get_user_from_token(request)
+        
+        # Check if user has permission to view this complaint
+        if user_info:
+            # User can view their own complaints, admins can view all
+            if not user_info['isAdmin'] and complaint.get('userId') != user_info['userId']:
+                return jsonify({"success": False, "message": "Unauthorized to view this complaint"}), 403
+        # If no token provided, allow access for backward compatibility but log warning
+        else:
+            logger.warning(f"Unauthenticated access to complaint {complaint_id}")
 
         # Clean up the object before returning
         complaint.pop('_id', None)
@@ -741,7 +1010,14 @@ def get_complaint_status(complaint_id):
                 "estimated_resolution": complaint.get("estimated_resolution"),
                 "confidence": complaint.get("confidence"),
                 "priority": complaint.get("priority"),
-                "analysis": complaint.get("analysis", {})
+                "analysis": complaint.get("analysis", {}),
+                
+                # User information (if available)
+                "submittedBy": complaint.get("name"),
+                "userId": complaint.get("userId"),
+                "userEmail": complaint.get("email"),
+                "userPhone": complaint.get("phone"),
+                "isAuthenticated": complaint.get("is_authenticated", False)
             }
         }), 200
 
@@ -757,12 +1033,15 @@ def get_complaint_status(complaint_id):
 @complaint_routes.route("/api/admin/complaints", methods=["GET"])
 def get_admin_complaints():
     """
-    Get complaints for admin dashboard with filtering and pagination
+    Get complaints for admin dashboard with filtering, pagination, and enhanced user info
     """
     try:
-        # Check admin authentication (you can modify this based on your auth system)
-        if "admin_logged_in" not in session:
-            return jsonify({"success": False, "message": "Unauthorized"}), 401
+        # Check admin authentication
+        user_info = get_user_from_token(request)
+        if not user_info or not user_info['isAdmin']:
+            # Fallback to session check for backward compatibility
+            if "admin_logged_in" not in session:
+                return jsonify({"success": False, "message": "Admin access required"}), 401
 
         # Get query parameters
         department = request.args.get('department')
@@ -770,6 +1049,7 @@ def get_admin_complaints():
         status = request.args.get('status')
         page = int(request.args.get('page', 1))
         limit = int(request.args.get('limit', 10))
+        user_id = request.args.get('userId')  # New: Filter by specific user
         
         # Build query
         query = {}
@@ -779,12 +1059,14 @@ def get_admin_complaints():
             query['urgency'] = urgency
         if status and status != 'all':
             query['status'] = status
+        if user_id:
+            query['userId'] = user_id
 
         # Get total count
         total_count = complaints_collection.count_documents(query)
         
         # Get complaints with pagination
-        complaints = list(complaints_collection.find(query)
+        complaints = list(complaints_collection.find(query, {'token': 0})  # Exclude tokens
                          .sort("timestamp", -1)
                          .skip((page - 1) * limit)
                          .limit(limit))
@@ -792,7 +1074,6 @@ def get_admin_complaints():
         # Clean up complaints for response
         for complaint in complaints:
             complaint.pop('_id', None)
-            complaint.pop('token', None)
             if complaint.get('timestamp'):
                 complaint['timestamp'] = complaint['timestamp'].isoformat()
             
@@ -801,7 +1082,7 @@ def get_admin_complaints():
                 complaint['description'] = complaint['complaint']
             # Ensure name field exists
             if not complaint.get('name'):
-                complaint['name'] = 'Kunal Thakare'
+                complaint['name'] = 'Anonymous User'
 
         return jsonify({
             "success": True,
@@ -827,10 +1108,15 @@ def get_admin_complaints():
 def update_complaint_status():
     """
     Updates the status of a complaint. Requires admin authentication.
+    Enhanced with user notification capability.
     """
     try:
-        if "admin_logged_in" not in session:
-            return jsonify({"success": False, "message": "Unauthorized"}), 401
+        # Check admin authentication
+        user_info = get_user_from_token(request)
+        if not user_info or not user_info['isAdmin']:
+            # Fallback to session check for backward compatibility
+            if "admin_logged_in" not in session:
+                return jsonify({"success": False, "message": "Admin access required"}), 401
 
         data = request.json
         complaint_id = data.get("id")
@@ -840,9 +1126,15 @@ def update_complaint_status():
         if not complaint_id or not new_status:
             return jsonify({"success": False, "message": "Invalid input"}), 400
 
+        # Get the complaint to check if user exists
+        complaint = complaints_collection.find_one({"id": complaint_id})
+        if not complaint:
+            return jsonify({"success": False, "message": "Complaint not found"}), 404
+
         update_data = {
             "status": new_status,
-            "updated_at": datetime.now()
+            "updated_at": datetime.now(),
+            "updated_by": user_info.get('email') if user_info else session.get("admin_email", "admin")
         }
         
         if admin_notes:
@@ -854,11 +1146,21 @@ def update_complaint_status():
         )
 
         if result.modified_count == 0:
-            return jsonify({"success": False, "message": "No complaint found with the given ID"}), 404
+            return jsonify({"success": False, "message": "Failed to update complaint"}), 500
+
+        # Log the status update with user information
+        user_name = complaint.get('name', 'Unknown User')
+        logger.info(f"Complaint {complaint_id} status updated to '{new_status}' by admin - User: {user_name}")
 
         return jsonify({
             "success": True, 
-            "message": "Complaint status updated successfully"
+            "message": "Complaint status updated successfully",
+            "complaint": {
+                "id": complaint_id,
+                "status": new_status,
+                "updatedBy": update_data["updated_by"],
+                "updatedAt": update_data["updated_at"].isoformat()
+            }
         }), 200
 
     except Exception as e:
@@ -869,15 +1171,105 @@ def update_complaint_status():
             "error": str(e)
         }), 500
 
+# NEW: Get User Statistics with better analysis
+@complaint_routes.route("/api/user/stats", methods=["GET"])
+def get_user_stats():
+    """
+    Get comprehensive statistics for the authenticated user's complaints
+    """
+    try:
+        # Get user information from token
+        user_info = get_user_from_token(request)
+        
+        if not user_info or not user_info['userId']:
+            return jsonify({"success": False, "message": "Authentication required"}), 401
+
+        # Get date range parameter
+        days = int(request.args.get('days', 30))
+        start_date = datetime.now() - datetime.timedelta(days=days) if days > 0 else None
+
+        # Build base query
+        query = {"userId": user_info['userId']}
+        if start_date:
+            query["timestamp"] = {"$gte": start_date}
+
+        # Get user's complaint statistics using aggregation pipeline
+        pipeline = [
+            {"$match": query},
+            {"$group": {
+                "_id": {
+                    "status": "$status",
+                    "urgency": "$urgency", 
+                    "department": "$department"
+                },
+                "count": {"$sum": 1}
+            }}
+        ]
+
+        results = list(complaints_collection.aggregate(pipeline))
+        
+        # Process results
+        stats = {
+            "total_complaints": 0,
+            "by_status": {},
+            "by_urgency": {},
+            "by_department": {},
+            "period_days": days
+        }
+
+        for result in results:
+            status = result["_id"]["status"]
+            urgency = result["_id"]["urgency"]
+            department = result["_id"]["department"]
+            count = result["count"]
+
+            stats["total_complaints"] += count
+            stats["by_status"][status] = stats["by_status"].get(status, 0) + count
+            stats["by_urgency"][urgency] = stats["by_urgency"].get(urgency, 0) + count
+            stats["by_department"][department] = stats["by_department"].get(department, 0) + count
+
+        # Get recent activity
+        recent_complaints = list(complaints_collection.find(
+            {"userId": user_info['userId']}, 
+            {'_id': 0, 'token': 0}
+        ).sort("timestamp", -1).limit(5))
+
+        for complaint in recent_complaints:
+            if complaint.get('timestamp'):
+                complaint['timestamp'] = complaint['timestamp'].isoformat()
+
+        return jsonify({
+            "success": True,
+            "stats": stats,
+            "recent_complaints": recent_complaints,
+            "user": {
+                "name": user_info['name'],
+                "email": user_info['email'],
+                "userId": user_info['userId']
+            }
+        }), 200
+
+    except Exception as e:
+        logger.error(f"User stats error: {str(e)}")
+        return jsonify({
+            "success": False, 
+            "message": "Failed to fetch user statistics", 
+            "error": str(e)
+        }), 500
+
 # ------------------ Analytics Route ------------------
 @complaint_routes.route("/api/admin/analytics", methods=["GET"])
 def get_complaint_analytics():
     """
-    Get complaint analytics for admin dashboard
+    Get complaint analytics for admin dashboard with enhanced user insights
     """
     try:
-        if "admin_logged_in" not in session:
-            return jsonify({"success": False, "message": "Unauthorized"}), 401
+        # Check admin authentication
+        user_info = get_user_from_token(request)
+        if not user_info or not user_info['isAdmin']:
+            # Fallback to session check for backward compatibility
+            if "admin_logged_in" not in session:
+                return jsonify({"success": False, "message": "Admin access required"}), 401
 
         # Get date range
         days = int(request.args.get('days', 30))
@@ -890,7 +1282,8 @@ def get_complaint_analytics():
                 "_id": {
                     "department": "$department",
                     "urgency": "$urgency",
-                    "status": "$status"
+                    "status": "$status",
+                    "is_authenticated": "$is_authenticated"
                 },
                 "count": {"$sum": 1}
             }}
@@ -900,26 +1293,50 @@ def get_complaint_analytics():
         
         # Process results
         analytics = {
-            "total_complaints": len(results),
+            "total_complaints": 0,
             "by_department": {},
             "by_urgency": {},
-            "by_status": {}
+            "by_status": {},
+            "authenticated_vs_anonymous": {"authenticated": 0, "anonymous": 0},
+            "period_days": days
         }
 
         for result in results:
             dept = result["_id"]["department"]
             urgency = result["_id"]["urgency"]
             status = result["_id"]["status"]
+            is_authenticated = result["_id"].get("is_authenticated", False)
             count = result["count"]
 
+            analytics["total_complaints"] += count
             analytics["by_department"][dept] = analytics["by_department"].get(dept, 0) + count
             analytics["by_urgency"][urgency] = analytics["by_urgency"].get(urgency, 0) + count
             analytics["by_status"][status] = analytics["by_status"].get(status, 0) + count
+            
+            if is_authenticated:
+                analytics["authenticated_vs_anonymous"]["authenticated"] += count
+            else:
+                analytics["authenticated_vs_anonymous"]["anonymous"] += count
+
+        # Get user engagement statistics
+        user_engagement_pipeline = [
+            {"$match": {"timestamp": {"$gte": start_date}, "userId": {"$ne": None}}},
+            {"$group": {
+                "_id": "$userId",
+                "complaint_count": {"$sum": 1},
+                "user_name": {"$first": "$name"},
+                "user_email": {"$first": "$email"}
+            }},
+            {"$sort": {"complaint_count": -1}},
+            {"$limit": 10}
+        ]
+
+        top_users = list(complaints_collection.aggregate(user_engagement_pipeline))
+        analytics["top_users"] = top_users
 
         return jsonify({
             "success": True,
-            "analytics": analytics,
-            "period_days": days
+            "analytics": analytics
         }), 200
 
     except Exception as e:
@@ -927,5 +1344,541 @@ def get_complaint_analytics():
         return jsonify({
             "success": False, 
             "message": "Failed to fetch analytics", 
+            "error": str(e)
+        }), 500
+
+# ------------------ Search Complaints by User ------------------
+@complaint_routes.route("/api/admin/complaints/search", methods=["GET"])
+def search_complaints():
+    """
+    Search complaints by user email, name, or complaint text (admin only)
+    """
+    try:
+        # Check admin authentication
+        user_info = get_user_from_token(request)
+        if not user_info or not user_info['isAdmin']:
+            if "admin_logged_in" not in session:
+                return jsonify({"success": False, "message": "Admin access required"}), 401
+
+        search_term = request.args.get('q', '').strip()
+        if not search_term:
+            return jsonify({"success": False, "message": "Search term required"}), 400
+
+        # Search in multiple fields
+        search_query = {
+            "$or": [
+                {"name": {"$regex": search_term, "$options": "i"}},
+                {"email": {"$regex": search_term, "$options": "i"}},
+                {"complaint": {"$regex": search_term, "$options": "i"}},
+                {"description": {"$regex": search_term, "$options": "i"}},
+                {"location": {"$regex": search_term, "$options": "i"}},
+                {"id": {"$regex": search_term, "$options": "i"}}
+            ]
+        }
+
+        # Get pagination parameters
+        page = int(request.args.get('page', 1))
+        limit = int(request.args.get('limit', 10))
+
+        # Get total count
+        total_count = complaints_collection.count_documents(search_query)
+        
+        # Get complaints with pagination
+        complaints = list(complaints_collection.find(search_query, {'token': 0})
+                         .sort("timestamp", -1)
+                         .skip((page - 1) * limit)
+                         .limit(limit))
+
+        # Clean up complaints for response
+        for complaint in complaints:
+            complaint.pop('_id', None)
+            if complaint.get('timestamp'):
+                complaint['timestamp'] = complaint['timestamp'].isoformat()
+
+        return jsonify({
+            "success": True,
+            "complaints": complaints,
+            "search_term": search_term,
+            "pagination": {
+                "total_count": total_count,
+                "page": page,
+                "limit": limit,
+                "total_pages": (total_count + limit - 1) // limit
+            }
+        }), 200
+
+    except Exception as e:
+        logger.error(f"Search complaints error: {str(e)}")
+        return jsonify({
+            "success": False, 
+            "message": "Failed to search complaints", 
+            "error": str(e)
+        }), 500
+
+# ------------------ Get User Profile with Complaint History ------------------
+@complaint_routes.route("/api/admin/user/<user_id>/profile", methods=["GET"])
+def get_user_profile_with_complaints(user_id):
+    """
+    Get user profile with their complaint history (admin only)
+    """
+    try:
+        # Check admin authentication
+        user_info = get_user_from_token(request)
+        if not user_info or not user_info['isAdmin']:
+            if "admin_logged_in" not in session:
+                return jsonify({"success": False, "message": "Admin access required"}), 401
+
+        # Get user data
+        user = users_collection.find_one({"userId": user_id}, {"passwordHash": 0})
+        if not user:
+            return jsonify({"success": False, "message": "User not found"}), 404
+
+        # Get user's complaints
+        user_complaints = list(complaints_collection.find({"userId": user_id}, {'token': 0})
+                              .sort("timestamp", -1)
+                              .limit(50))  # Latest 50 complaints
+
+        # Clean up complaints
+        for complaint in user_complaints:
+            complaint.pop('_id', None)
+            if complaint.get('timestamp'):
+                complaint['timestamp'] = complaint['timestamp'].isoformat()
+
+        # Get user statistics
+        stats_pipeline = [
+            {"$match": {"userId": user_id}},
+            {"$group": {
+                "_id": {
+                    "status": "$status",
+                    "urgency": "$urgency",
+                    "department": "$department"
+                },
+                "count": {"$sum": 1}
+            }}
+        ]
+
+        stats_results = list(complaints_collection.aggregate(stats_pipeline))
+        
+        stats = {
+            "total_complaints": 0,
+            "by_status": {},
+            "by_urgency": {},
+            "by_department": {}
+        }
+
+        for result in stats_results:
+            status = result["_id"]["status"]
+            urgency = result["_id"]["urgency"]
+            department = result["_id"]["department"]
+            count = result["count"]
+
+            stats["total_complaints"] += count
+            stats["by_status"][status] = stats["by_status"].get(status, 0) + count
+            stats["by_urgency"][urgency] = stats["by_urgency"].get(urgency, 0) + count
+            stats["by_department"][department] = stats["by_department"].get(department, 0) + count
+
+        # Clean up user data
+        user.pop('_id', None)
+        if user.get('createdAt'):
+            user['createdAt'] = user['createdAt'].isoformat()
+        if user.get('lastLoginAt'):
+            user['lastLoginAt'] = user['lastLoginAt'].isoformat()
+
+        return jsonify({
+            "success": True,
+            "user": user,
+            "complaints": user_complaints,
+            "stats": stats
+        }), 200
+
+    except Exception as e:
+        logger.error(f"User profile fetch error: {str(e)}")
+        return jsonify({
+            "success": False, 
+            "message": "Failed to fetch user profile", 
+            "error": str(e)
+        }), 500
+
+
+        # Add this to your complaint_routes.py file
+
+import math
+from collections import defaultdict
+
+# Helper function to calculate distance between two coordinates using Haversine formula
+def calculate_distance(lat1, lon1, lat2, lon2):
+    """
+    Calculate the distance between two points on Earth using the Haversine formula
+    Returns distance in meters
+    """
+    if not all([lat1, lon1, lat2, lon2]):
+        return float('inf')  # Return infinity if any coordinate is missing
+    
+    try:
+        # Convert latitude and longitude from degrees to radians
+        lat1, lon1, lat2, lon2 = map(math.radians, [float(lat1), float(lon1), float(lat2), float(lon2)])
+        
+        # Haversine formula
+        dlat = lat2 - lat1
+        dlon = lon2 - lon1
+        a = math.sin(dlat/2)**2 + math.cos(lat1) * math.cos(lat2) * math.sin(dlon/2)**2
+        c = 2 * math.asin(math.sqrt(a))
+        
+        # Radius of Earth in meters
+        r = 6371000
+        
+        return c * r
+    except (ValueError, TypeError):
+        return float('inf')
+
+# NEW: Get nearby complaints for a user
+@complaint_routes.route("/api/user/nearby-complaints", methods=["GET"])
+def get_nearby_complaints():
+    """
+    Get complaints within 400m of the authenticated user's location with voting functionality
+    """
+    try:
+        # Get user information from token
+        user_info = get_user_from_token(request)
+        
+        if not user_info or not user_info['userId']:
+            return jsonify({"success": False, "message": "Authentication required"}), 401
+
+        # Get user's location from database
+        user = users_collection.find_one({"userId": user_info['userId']})
+        if not user:
+            return jsonify({"success": False, "message": "User not found"}), 404
+
+        user_lat = user.get('latitude')
+        user_lng = user.get('longitude')
+        
+        if not user_lat or not user_lng:
+            return jsonify({
+                "success": False, 
+                "message": "Your location is not available. Please update your profile with location information.",
+                "error_code": "NO_USER_LOCATION"
+            }), 400
+
+        # Get query parameters
+        radius = min(int(request.args.get('radius', 400)), 2000)  # Cap at 2km for performance
+        page = int(request.args.get('page', 1))
+        limit = min(int(request.args.get('limit', 20)), 50)  # Cap at 50 for performance
+        status_filter = request.args.get('status')
+        department_filter = request.args.get('department')
+        urgency_filter = request.args.get('urgency')
+
+        # Build query - exclude user's own complaints
+        query = {
+            "userId": {"$ne": user_info['userId']},  # Exclude own complaints
+            "latitude": {"$ne": None},
+            "longitude": {"$ne": None}
+        }
+        
+        # Add filters
+        if status_filter and status_filter != 'all':
+            query['status'] = status_filter
+        if department_filter and department_filter != 'all':
+            query['department'] = department_filter  
+        if urgency_filter and urgency_filter != 'all':
+            query['urgency'] = urgency_filter
+
+        # Get all complaints with location data (we'll filter by distance after)
+        all_complaints = list(complaints_collection.find(query, {'token': 0}))
+        
+        # Filter complaints by distance and add distance info
+        nearby_complaints = []
+        for complaint in all_complaints:
+            complaint_lat = complaint.get('latitude')
+            complaint_lng = complaint.get('longitude')
+            
+            distance = calculate_distance(user_lat, user_lng, complaint_lat, complaint_lng)
+            
+            if distance <= radius:
+                complaint.pop('_id', None)
+                if complaint.get('timestamp'):
+                    complaint['timestamp'] = complaint['timestamp'].isoformat()
+                
+                # Add distance information
+                complaint['distance'] = round(distance)
+                complaint['distance_text'] = f"{round(distance)}m away" if distance < 1000 else f"{round(distance/1000, 1)}km away"
+                
+                # Add voting information
+                complaint['upvotes'] = complaint.get('upvotes', [])
+                complaint['downvotes'] = complaint.get('downvotes', [])
+                complaint['upvote_count'] = len(complaint.get('upvotes', []))
+                complaint['downvote_count'] = len(complaint.get('downvotes', []))
+                complaint['user_voted'] = {
+                    'upvoted': user_info['userId'] in complaint.get('upvotes', []),
+                    'downvoted': user_info['userId'] in complaint.get('downvotes', [])
+                }
+                
+                # Calculate voting score (upvotes - downvotes)
+                complaint['vote_score'] = complaint['upvote_count'] - complaint['downvote_count']
+                
+                # Hide sensitive user information but keep name for display
+                complaint.pop('email', None)
+                complaint.pop('phone', None)
+                complaint.pop('userAddress', None)
+                
+                nearby_complaints.append(complaint)
+        
+        # Sort by distance first, then by vote score
+        nearby_complaints.sort(key=lambda x: (x['distance'], -x['vote_score']))
+        
+        # Apply pagination
+        total_count = len(nearby_complaints)
+        start_idx = (page - 1) * limit
+        end_idx = start_idx + limit
+        paginated_complaints = nearby_complaints[start_idx:end_idx]
+
+        return jsonify({
+            "success": True,
+            "complaints": paginated_complaints,
+            "user_location": {
+                "latitude": float(user_lat),
+                "longitude": float(user_lng)
+            },
+            "filters": {
+                "radius": radius,
+                "status": status_filter,
+                "department": department_filter,
+                "urgency": urgency_filter
+            },
+            "pagination": {
+                "total_count": total_count,
+                "page": page,
+                "limit": limit,
+                "total_pages": (total_count + limit - 1) // limit
+            },
+            "stats": {
+                "total_nearby": total_count,
+                "radius_searched": radius,
+                "departments": list(set(c.get('department') for c in nearby_complaints if c.get('department'))),
+                "urgency_levels": list(set(c.get('urgency') for c in nearby_complaints if c.get('urgency')))
+            }
+        }), 200
+
+    except Exception as e:
+        logger.error(f"Nearby complaints fetch error: {str(e)}")
+        return jsonify({
+            "success": False, 
+            "message": "Failed to fetch nearby complaints", 
+            "error": str(e)
+        }), 500
+
+# NEW: Vote on a complaint (upvote/downvote)
+@complaint_routes.route("/api/complaint/<complaint_id>/vote", methods=["POST"])
+def vote_on_complaint(complaint_id):
+    """
+    Allow users to upvote or downvote nearby complaints
+    """
+    try:
+        # Get user information from token
+        user_info = get_user_from_token(request)
+        
+        if not user_info or not user_info['userId']:
+            return jsonify({"success": False, "message": "Authentication required"}), 401
+
+        data = request.json
+        vote_type = data.get('vote_type')  # 'upvote', 'downvote', or 'remove'
+        
+        if vote_type not in ['upvote', 'downvote', 'remove']:
+            return jsonify({"success": False, "message": "Invalid vote type"}), 400
+
+        # Get the complaint
+        complaint = complaints_collection.find_one({"id": complaint_id})
+        if not complaint:
+            return jsonify({"success": False, "message": "Complaint not found"}), 404
+
+        # Users cannot vote on their own complaints
+        if complaint.get('userId') == user_info['userId']:
+            return jsonify({"success": False, "message": "Cannot vote on your own complaint"}), 400
+
+        # Check if complaint is within user's range (optional security check)
+        user = users_collection.find_one({"userId": user_info['userId']})
+        if user and user.get('latitude') and user.get('longitude'):
+            distance = calculate_distance(
+                user.get('latitude'), user.get('longitude'),
+                complaint.get('latitude'), complaint.get('longitude')
+            )
+            if distance > 2000:  # 2km max for voting
+                return jsonify({"success": False, "message": "Complaint is too far to vote on"}), 400
+
+        user_id = user_info['userId']
+        current_upvotes = complaint.get('upvotes', [])
+        current_downvotes = complaint.get('downvotes', [])
+
+        # Remove user from both lists first
+        new_upvotes = [uid for uid in current_upvotes if uid != user_id]
+        new_downvotes = [uid for uid in current_downvotes if uid != user_id]
+
+        # Add user to appropriate list based on vote type
+        if vote_type == 'upvote':
+            new_upvotes.append(user_id)
+        elif vote_type == 'downvote':
+            new_downvotes.append(user_id)
+        # For 'remove', we just keep the user removed from both lists
+
+        # Update the complaint
+        update_data = {
+            'upvotes': new_upvotes,
+            'downvotes': new_downvotes,
+            'vote_updated_at': datetime.now()
+        }
+
+        result = complaints_collection.update_one(
+            {"id": complaint_id},
+            {"$set": update_data}
+        )
+
+        if result.modified_count == 0:
+            return jsonify({"success": False, "message": "Failed to update vote"}), 500
+
+        # Log the voting activity
+        logger.info(f"User {user_info['userId']} {vote_type}d complaint {complaint_id}")
+
+        return jsonify({
+            "success": True,
+            "message": f"Vote {vote_type}d successfully",
+            "vote_counts": {
+                "upvotes": len(new_upvotes),
+                "downvotes": len(new_downvotes),
+                "score": len(new_upvotes) - len(new_downvotes)
+            },
+            "user_vote": {
+                "upvoted": user_id in new_upvotes,
+                "downvoted": user_id in new_downvotes
+            }
+        }), 200
+
+    except Exception as e:
+        logger.error(f"Vote complaint error: {str(e)}")
+        return jsonify({
+            "success": False, 
+            "message": "Failed to vote on complaint", 
+            "error": str(e)
+        }), 500
+
+# NEW: Get complaint voting details
+@complaint_routes.route("/api/complaint/<complaint_id>/votes", methods=["GET"])
+def get_complaint_votes(complaint_id):
+    """
+    Get voting details for a complaint
+    """
+    try:
+        # Get user information from token
+        user_info = get_user_from_token(request)
+        
+        if not user_info or not user_info['userId']:
+            return jsonify({"success": False, "message": "Authentication required"}), 401
+
+        complaint = complaints_collection.find_one({"id": complaint_id})
+        if not complaint:
+            return jsonify({"success": False, "message": "Complaint not found"}), 404
+
+        upvotes = complaint.get('upvotes', [])
+        downvotes = complaint.get('downvotes', [])
+        user_id = user_info['userId']
+
+        return jsonify({
+            "success": True,
+            "complaint_id": complaint_id,
+            "vote_counts": {
+                "upvotes": len(upvotes),
+                "downvotes": len(downvotes),
+                "score": len(upvotes) - len(downvotes)
+            },
+            "user_vote": {
+                "upvoted": user_id in upvotes,
+                "downvoted": user_id in downvotes
+            }
+        }), 200
+
+    except Exception as e:
+        logger.error(f"Get complaint votes error: {str(e)}")
+        return jsonify({
+            "success": False, 
+            "message": "Failed to get voting details", 
+            "error": str(e)
+        }), 500
+
+# NEW: Get community engagement stats
+@complaint_routes.route("/api/user/community-stats", methods=["GET"])
+def get_community_stats():
+    """
+    Get community engagement statistics for the user's area
+    """
+    try:
+        # Get user information from token
+        user_info = get_user_from_token(request)
+        
+        if not user_info or not user_info['userId']:
+            return jsonify({"success": False, "message": "Authentication required"}), 401
+
+        # Get user's location
+        user = users_collection.find_one({"userId": user_info['userId']})
+        if not user or not user.get('latitude') or not user.get('longitude'):
+            return jsonify({
+                "success": False, 
+                "message": "Location required for community stats"
+            }), 400
+
+        user_lat = float(user.get('latitude'))
+        user_lng = float(user.get('longitude'))
+        radius = int(request.args.get('radius', 400))
+
+        # Get all complaints with location in a reasonable range first
+        all_complaints = list(complaints_collection.find({
+            "latitude": {"$ne": None},
+            "longitude": {"$ne": None}
+        }))
+
+        # Filter by distance and calculate stats
+        nearby_complaints = []
+        for complaint in all_complaints:
+            distance = calculate_distance(
+                user_lat, user_lng,
+                complaint.get('latitude'), complaint.get('longitude')
+            )
+            if distance <= radius:
+                nearby_complaints.append(complaint)
+
+        # Calculate statistics
+        total_complaints = len(nearby_complaints)
+        departments = defaultdict(int)
+        statuses = defaultdict(int)
+        urgencies = defaultdict(int)
+        total_votes = 0
+
+        for complaint in nearby_complaints:
+            departments[complaint.get('department', 'Unknown')] += 1
+            statuses[complaint.get('status', 'Unknown')] += 1
+            urgencies[complaint.get('urgency', 'medium')] += 1
+            total_votes += len(complaint.get('upvotes', [])) + len(complaint.get('downvotes', []))
+
+        return jsonify({
+            "success": True,
+            "stats": {
+                "total_complaints": total_complaints,
+                "total_community_votes": total_votes,
+                "radius": radius,
+                "by_department": dict(departments),
+                "by_status": dict(statuses),
+                "by_urgency": dict(urgencies),
+                "avg_votes_per_complaint": round(total_votes / max(total_complaints, 1), 2),
+                "most_common_department": max(departments.items(), key=lambda x: x[1])[0] if departments else "N/A",
+                "most_common_issue": max(urgencies.items(), key=lambda x: x[1])[0] if urgencies else "N/A"
+            },
+            "user_location": {
+                "latitude": user_lat,
+                "longitude": user_lng
+            }
+        }), 200
+
+    except Exception as e:
+        logger.error(f"Community stats error: {str(e)}")
+        return jsonify({
+            "success": False, 
+            "message": "Failed to fetch community statistics", 
             "error": str(e)
         }), 500

@@ -8,7 +8,7 @@ from datetime import datetime
 import telegram1
 
 # HuggingFace                                   
-from transformers import pipeline
+# from transformers import pipeline
 
 # Routes
 from routes.complaint_routes import complaint_routes
@@ -49,59 +49,59 @@ app.register_blueprint(voice_routes)
 app.register_blueprint(auth_bp)                 
 
 # ---------------- HuggingFace Model ----------------
-HF_MODEL_NAME = os.environ.get("HF_MODEL_NAME", "bigscience/bloom-560m")
+# HF_MODEL_NAME = os.environ.get("HF_MODEL_NAME", "bigscience/bloom-560m")
 
-GEN_MAX_LENGTH = int(os.environ.get("GEN_MAX_LENGTH", "256"))
-GEN_TEMPERATURE = float(os.environ.get("GEN_TEMPERATURE", "0.8"))
-GEN_TOP_P = float(os.environ.get("GEN_TOP_P", "0.95"))
-GEN_DO_SAMPLE = os.environ.get("GEN_DO_SAMPLE", "true").lower() == "true"
+# GEN_MAX_LENGTH = int(os.environ.get("GEN_MAX_LENGTH", "256"))
+# GEN_TEMPERATURE = float(os.environ.get("GEN_TEMPERATURE", "0.8"))
+# GEN_TOP_P = float(os.environ.get("GEN_TOP_P", "0.95"))
+# GEN_DO_SAMPLE = os.environ.get("GEN_DO_SAMPLE", "true").lower() == "true"
 
-chatbot = None
-try:
-    logger.info(f"Loading Hugging Face model: {HF_MODEL_NAME}")
-    chatbot = pipeline("text-generation", model=HF_MODEL_NAME)
-    logger.info("✅ Chatbot model loaded successfully.")
-except Exception as e:
-    logger.exception(f"❌ Failed to load Hugging Face model: {e}")
-    chatbot = None 
+# chatbot = None
+# try:
+#     logger.info(f"Loading Hugging Face model: {HF_MODEL_NAME}")
+#     chatbot = pipeline("text-generation", model=HF_MODEL_NAME)
+#     logger.info("✅ Chatbot model loaded successfully.")
+# except Exception as e:
+#     logger.exception(f"❌ Failed to load Hugging Face model: {e}")
+#     chatbot = None 
 
-# ---------------- Helpers ----------------
-def _build_prompt(user_text: str) -> str:
-    return (
-        "आप एक सहायक हैं जो भारत सरकार की योजनाओं की जानकारी"
-        " बहुत ही सरल हिंदी में गरीब लोगों को समझाते हैं।\n\n"
-        f"सवाल: {user_text.strip()}\n\n"
-        "उत्तर आसान, छोटे बिंदुओं में, और स्पष्ट हिंदी में दें।\n"
-        "अगर योजना का नाम, पात्रता, आवेदन प्रक्रिया और लाभ बता सकें तो शामिल करें।\n\n"
-        "उत्तर:\n"
-    )
+# # ---------------- Helpers ----------------
+# def _build_prompt(user_text: str) -> str:
+#     return (
+#         "आप एक सहायक हैं जो भारत सरकार की योजनाओं की जानकारी"
+#         " बहुत ही सरल हिंदी में गरीब लोगों को समझाते हैं।\n\n"
+#         f"सवाल: {user_text.strip()}\n\n"
+#         "उत्तर आसान, छोटे बिंदुओं में, और स्पष्ट हिंदी में दें।\n"
+#         "अगर योजना का नाम, पात्रता, आवेदन प्रक्रिया और लाभ बता सकें तो शामिल करें।\n\n"
+#         "उत्तर:\n"
+#     )
 
-def _postprocess_generated(user_prompt: str, generated_text: str) -> str:
-    try:
-        if generated_text.startswith(user_prompt):
-            generated_text = generated_text[len(user_prompt):]
-        return generated_text.strip()
-    except Exception:
-        return generated_text.strip()
+# def _postprocess_generated(user_prompt: str, generated_text: str) -> str:
+#     try:
+#         if generated_text.startswith(user_prompt):
+#             generated_text = generated_text[len(user_prompt):]
+#         return generated_text.strip()
+#     except Exception:
+#         return generated_text.strip()
 
-def find_scheme_info(user_text: str):
-    for scheme_name, data in SCHEMES.items():
-        if scheme_name in user_text:
-            return scheme_name, data
-    return None, None
+# def find_scheme_info(user_text: str):
+#     for scheme_name, data in SCHEMES.items():
+#         if scheme_name in user_text:
+#             return scheme_name, data
+#     return None, None
 
 # ---------------- Routes ----------------
-@app.route("/", methods=["GET"])
-def health_check():
-    logger.info("Health check pinged")
-    return jsonify({
-        "status": "running",
-        "message": "JantaVoice API is live 🚀",
-        "version": "2.0",
-        "timestamp_utc": datetime.utcnow().isoformat() + "Z",
-        "chatbot_model": HF_MODEL_NAME,
-        "chatbot_loaded": chatbot is not None
-    }), 200
+# @app.route("/", methods=["GET"])
+# def health_check():
+#     logger.info("Health check pinged")
+#     return jsonify({
+#         "status": "running",
+#         "message": "JantaVoice API is live 🚀",
+#         "version": "2.0",
+#         "timestamp_utc": datetime.utcnow().isoformat() + "Z",
+#         "chatbot_model": HF_MODEL_NAME,
+#         "chatbot_loaded": chatbot is not None
+#     }), 200
 
 
 # ---------------- Telegram Bot Routes ----------------
@@ -164,50 +164,50 @@ def not_found(error):
 def internal_error(error):
     return {"success": False, "message": "Internal server error"}, 500
 
-@app.route("/api/chat", methods=["POST"])
-def chat():
-    try:
-        if chatbot is None:
-            return jsonify({"reply": "Chatbot model not loaded."}), 500
+# @app.route("/api/chat", methods=["POST"])
+# def chat():
+#     try:
+#         if chatbot is None:
+#             return jsonify({"reply": "Chatbot model not loaded."}), 500
 
-        data = request.get_json(silent=True) or {}
-        prompt = data.get("message", "").strip()
+#         data = request.get_json(silent=True) or {}
+#         prompt = data.get("message", "").strip()
 
-        if not prompt:
-            return jsonify({"reply": "Message is empty"}), 400
+#         if not prompt:
+#             return jsonify({"reply": "Message is empty"}), 400
 
-        # Step 1: Predefined schemes
-        scheme_name, scheme_data = find_scheme_info(prompt)
-        if scheme_data:
-            reply = f"👉 *{scheme_name}*\n\n"
-            reply += f"🌐 आधिकारिक लिंक: {scheme_data['link']}\n\n"
-            reply += f"📌 पात्रता: {scheme_data['eligibility']}\n\n"
-            reply += f"🎯 लाभ: {scheme_data['benefits']}\n\n"
-            reply += "📝 आवेदन की प्रक्रिया:\n"
-            for i, step in enumerate(scheme_data["steps"], 1):
-                reply += f"{i}. {step}\n"
+#         # Step 1: Predefined schemes
+#         scheme_name, scheme_data = find_scheme_info(prompt)
+#         if scheme_data:
+#             reply = f"👉 *{scheme_name}*\n\n"
+#             reply += f"🌐 आधिकारिक लिंक: {scheme_data['link']}\n\n"
+#             reply += f"📌 पात्रता: {scheme_data['eligibility']}\n\n"
+#             reply += f"🎯 लाभ: {scheme_data['benefits']}\n\n"
+#             reply += "📝 आवेदन की प्रक्रिया:\n"
+#             for i, step in enumerate(scheme_data["steps"], 1):
+#                 reply += f"{i}. {step}\n"
 
-            return jsonify({"reply": reply}), 200
+#             return jsonify({"reply": reply}), 200
 
-        # Step 2: LLM fallback
-        full_prompt = _build_prompt(prompt)
-        outputs = chatbot(
-            full_prompt,
-            max_length=GEN_MAX_LENGTH,
-            do_sample=GEN_DO_SAMPLE,
-            top_p=GEN_TOP_P,
-            temperature=GEN_TEMPERATURE,
-            num_return_sequences=1,
-            pad_token_id=None
-        )
-        raw_text = outputs[0].get("generated_text", "")
-        reply = _postprocess_generated(full_prompt, raw_text)
+#         # Step 2: LLM fallback
+#         full_prompt = _build_prompt(prompt)
+#         outputs = chatbot(
+#             full_prompt,
+#             max_length=GEN_MAX_LENGTH,
+#             do_sample=GEN_DO_SAMPLE,
+#             top_p=GEN_TOP_P,
+#             temperature=GEN_TEMPERATURE,
+#             num_return_sequences=1,
+#             pad_token_id=None
+#         )
+#         raw_text = outputs[0].get("generated_text", "")
+#         reply = _postprocess_generated(full_prompt, raw_text)
 
-        return jsonify({"reply": reply}), 200
+#         return jsonify({"reply": reply}), 200
 
-    except Exception as e:
-        logger.exception("Chat error")
-        return jsonify({"reply": f"Error: {str(e)}"}), 500
+#     except Exception as e:
+#         logger.exception("Chat error")
+#         return jsonify({"reply": f"Error: {str(e)}"}), 500
 
 @app.route("/api/voice-complaint", methods=["POST"])
 def voice_complaint():

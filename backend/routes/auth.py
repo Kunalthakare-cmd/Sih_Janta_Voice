@@ -317,7 +317,6 @@
 #         return jsonify({"success": False, "message": "Failed to get user data", "error": str(e)}), 500
 
 
-
 from flask import Blueprint, request, jsonify, session
 from werkzeug.security import generate_password_hash, check_password_hash
 import uuid
@@ -348,72 +347,158 @@ ADMIN_CREDENTIALS = {
 
 @auth_bp.route("/api/auth/register", methods=["POST"])
 def register():
-    """User registration endpoint"""
+    """User registration endpoint with location support"""
     try:
         name = request.form.get("name")
         email = request.form.get("email")
         password = request.form.get("password")
         phone = request.form.get("phone")
         address = request.form.get("address")
+        
+        # New location fields
+        latitude = request.form.get("latitude")
+        longitude = request.form.get("longitude")
+        has_live_location = request.form.get("hasLiveLocation", "false").lower() == "true"
+        location_method = request.form.get("locationMethod", "manual")
+        
         photo = request.files.get("photo")
 
+        # Validate required fields
         if not all([name, email, password, phone, address]):
-            return jsonify({"success": False, "message": "All fields required"}), 400
+            return jsonify({"success": False, "message": "All required fields must be filled"}), 400
+
+        # Validate location data if provided
+        if latitude and longitude:
+            try:
+                lat_float = float(latitude)
+                lng_float = float(longitude)
+                
+                # Basic coordinate validation
+                if not (-90 <= lat_float <= 90):
+                    return jsonify({"success": False, "message": "Invalid latitude value"}), 400
+                if not (-180 <= lng_float <= 180):
+                    return jsonify({"success": False, "message": "Invalid longitude value"}), 400
+                    
+            except (ValueError, TypeError):
+                return jsonify({"success": False, "message": "Invalid coordinate format"}), 400
 
         # Check duplicate email or phone
-        if users_collection.find_one({"$or": [{"email": email}, {"phone": phone}]}):
-            return jsonify({"success": False, "message": "Email or phone already exists"}), 400
+        existing_user = users_collection.find_one({"$or": [{"email": email}, {"phone": phone}]})
+        if existing_user:
+            if existing_user.get("email") == email:
+                return jsonify({"success": False, "message": "Email already exists"}), 400
+            else:
+                return jsonify({"success": False, "message": "Phone number already exists"}), 400
 
+        # Handle photo upload
         photo_path = None
         if photo:
-            filename = f"{uuid.uuid4()}_{photo.filename}"
-            filepath = os.path.join(UPLOAD_FOLDER, filename)
-            photo.save(filepath)
-            photo_path = filepath
+            try:
+                # Validate file type
+                allowed_extensions = {'png', 'jpg', 'jpeg', 'gif', 'webp'}
+                file_extension = photo.filename.split('.')[-1].lower()
+                
+                if file_extension not in allowed_extensions:
+                    return jsonify({"success": False, "message": "Invalid file type. Only images are allowed"}), 400
+                
+                filename = f"user_{uuid.uuid4()}_{photo.filename}"
+                filepath = os.path.join(UPLOAD_FOLDER, filename)
+                photo.save(filepath)
+                photo_path = filepath
+                
+            except Exception as e:
+                logger.error(f"Photo upload error: {str(e)}")
+                return jsonify({"success": False, "message": "Failed to upload photo"}), 500
 
+        # Create user document
         user_id = str(uuid.uuid4())
-        user = {
+        user_data = {
             "userId": user_id,
-            "name": name,
-            "email": email,
-            "phone": phone,
-            "address": address,
+            "name": name.strip(),
+            "email": email.lower().strip(),
+            "phone": phone.strip(),
+            "address": address.strip(),
             "photo": photo_path,
             "passwordHash": generate_password_hash(password),
-            "role": "user",  # Default role
+            "role": "user",
             "createdAt": datetime.datetime.utcnow(),
-            "isActive": True
+            "isActive": True,
+            "registrationSource": "web_form_with_location"
         }
 
-        users_collection.insert_one(user)
+        # Add location data if available
+        if latitude and longitude:
+            user_data.update({
+                "latitude": latitude,
+                "longitude": longitude,
+                "hasLiveLocation": has_live_location,
+                "locationMethod": location_method,
+                "locationCapturedAt": datetime.datetime.utcnow(),
+                "coordinates": {
+                    "type": "Point",
+                    "coordinates": [float(longitude), float(latitude)]  # GeoJSON format [lng, lat]
+                }
+            })
+        else:
+            user_data.update({
+                "latitude": None,
+                "longitude": None,
+                "hasLiveLocation": False,
+                "locationMethod": "manual",
+                "coordinates": None
+            })
+
+        # Insert user into database
+        try:
+            users_collection.insert_one(user_data)
+        except Exception as e:
+            logger.error(f"Database insertion error: {str(e)}")
+            return jsonify({"success": False, "message": "Failed to create user account"}), 500
 
         # Generate JWT token
         token_payload = {
             'userId': user_id,
-            'email': email,
+            'email': email.lower().strip(),
             'role': 'user',
             'exp': datetime.datetime.utcnow() + datetime.timedelta(days=7)
         }
         token = jwt.encode(token_payload, JWT_SECRET_KEY, algorithm='HS256')
 
-        logger.info(f"New user registered: {email}")
+        logger.info(f"New user registered: {email} with location: {bool(latitude and longitude)}")
 
-        return jsonify({
+        # Prepare response (exclude sensitive data)
+        response_data = {
             "success": True,
             "message": "User registered successfully",
-            "userId": user["userId"],
+            "userId": user_id,
             "name": name,
-            "email": email,
+            "email": email.lower().strip(),
             "phone": phone,
             "address": address,
             "photo": photo_path,
             "role": "user",
-            "token": token
-        }), 201
+            "token": token,
+            "hasLocation": bool(latitude and longitude),
+            "locationMethod": location_method if latitude and longitude else None
+        }
+
+        # Include coordinates in response if available
+        if latitude and longitude:
+            response_data.update({
+                "latitude": latitude,
+                "longitude": longitude,
+                "locationCaptured": True
+            })
+
+        return jsonify(response_data), 201
 
     except Exception as e:
         logger.error(f"Registration error: {str(e)}")
-        return jsonify({"success": False, "message": "Registration failed", "error": str(e)}), 500
+        return jsonify({
+            "success": False, 
+            "message": "Registration failed due to server error", 
+            "error": str(e)
+        }), 500
 
 
 @auth_bp.route("/api/auth/login", methods=["POST"])
@@ -508,7 +593,8 @@ def login():
 
         logger.info(f"User login: {user['email']}")
 
-        return jsonify({
+        # Prepare response with location data
+        response_data = {
             "success": True,
             "message": "Login successful",
             "token": token,
@@ -519,8 +605,20 @@ def login():
             "address": user["address"],
             "photo": user.get("photo"),
             "role": user.get("role", "user"),
-            "createdAt": user["createdAt"].isoformat() if user.get("createdAt") else None
-        }), 200
+            "createdAt": user["createdAt"].isoformat() if user.get("createdAt") else None,
+            "hasLocation": bool(user.get("latitude") and user.get("longitude")),
+            "locationMethod": user.get("locationMethod")
+        }
+
+        # Include location data if available
+        if user.get("latitude") and user.get("longitude"):
+            response_data.update({
+                "latitude": user.get("latitude"),
+                "longitude": user.get("longitude"),
+                "locationCapturedAt": user.get("locationCapturedAt").isoformat() if user.get("locationCapturedAt") else None
+            })
+
+        return jsonify(response_data), 200
 
     except Exception as e:
         logger.error(f"Login error: {str(e)}")
@@ -652,7 +750,7 @@ def verify_token():
         if not user.get("isActive", True):
             return jsonify({"success": False, "message": "Account deactivated"}), 403
             
-        return jsonify({
+        response_data = {
             "success": True,
             "userId": user["userId"],
             "name": user["name"],
@@ -660,8 +758,20 @@ def verify_token():
             "phone": user["phone"],
             "address": user["address"],
             "photo": user.get("photo"),
-            "role": user.get("role", "user")
-        }), 200
+            "role": user.get("role", "user"),
+            "hasLocation": bool(user.get("latitude") and user.get("longitude"))
+        }
+        
+        # Include location data if available
+        if user.get("latitude") and user.get("longitude"):
+            response_data.update({
+                "latitude": user.get("latitude"),
+                "longitude": user.get("longitude"),
+                "locationMethod": user.get("locationMethod"),
+                "locationCapturedAt": user.get("locationCapturedAt").isoformat() if user.get("locationCapturedAt") else None
+            })
+            
+        return jsonify(response_data), 200
         
     except jwt.ExpiredSignatureError:
         return jsonify({"success": False, "message": "Token expired"}), 401
@@ -715,7 +825,7 @@ def verify_admin():
 
 @auth_bp.route("/api/users/<user_id>", methods=["GET"])
 def get_user(user_id):
-    """Get user profile data"""
+    """Get user profile data including location"""
     try:
         # Verify token
         token = request.headers.get('Authorization')
@@ -747,6 +857,8 @@ def get_user(user_id):
             user['createdAt'] = user['createdAt'].isoformat()
         if user.get('lastLoginAt'):
             user['lastLoginAt'] = user['lastLoginAt'].isoformat()
+        if user.get('locationCapturedAt'):
+            user['locationCapturedAt'] = user['locationCapturedAt'].isoformat()
             
         return jsonify({
             "success": True,
@@ -764,7 +876,7 @@ def get_user(user_id):
 
 @auth_bp.route("/api/users/<user_id>", methods=["PUT"])
 def update_user(user_id):
-    """Update user profile"""
+    """Update user profile including location"""
     try:
         # Verify token
         token = request.headers.get('Authorization')
@@ -774,7 +886,7 @@ def update_user(user_id):
         if token.startswith('Bearer '):
             token = token[7:]
         
-        payload = jwt.decode(token, JWT_SECRET_KEY, algorithms=['HS256'])
+        payload = jwt.decode(token, algorithms=['HS256'])
         
         # Only allow user to update their own profile (or admin)
         if payload.get('role') != 'admin' and payload.get('userId') != user_id:
@@ -784,10 +896,35 @@ def update_user(user_id):
         data = request.json
         update_fields = {}
         
-        allowed_fields = ['name', 'phone', 'address']
+        # Allow updating these fields
+        allowed_fields = ['name', 'phone', 'address', 'latitude', 'longitude']
         for field in allowed_fields:
-            if field in data:
+            if field in data and data[field] is not None:
                 update_fields[field] = data[field]
+        
+        # Validate coordinates if provided
+        if 'latitude' in update_fields or 'longitude' in update_fields:
+            lat = update_fields.get('latitude', data.get('latitude'))
+            lng = update_fields.get('longitude', data.get('longitude'))
+            
+            if lat is not None and lng is not None:
+                try:
+                    lat_float = float(lat)
+                    lng_float = float(lng)
+                    
+                    if not (-90 <= lat_float <= 90):
+                        return jsonify({"success": False, "message": "Invalid latitude"}), 400
+                    if not (-180 <= lng_float <= 180):
+                        return jsonify({"success": False, "message": "Invalid longitude"}), 400
+                    
+                    # Update GeoJSON coordinates
+                    update_fields['coordinates'] = {
+                        "type": "Point",
+                        "coordinates": [lng_float, lat_float]
+                    }
+                    
+                except (ValueError, TypeError):
+                    return jsonify({"success": False, "message": "Invalid coordinate format"}), 400
         
         if not update_fields:
             return jsonify({"success": False, "message": "No valid fields to update"}), 400
@@ -819,7 +956,7 @@ def update_user(user_id):
 
 @auth_bp.route("/api/admin/users", methods=["GET"])
 def get_all_users():
-    """Get all users (admin only)"""
+    """Get all users including location data (admin only)"""
     try:
         # Verify admin access
         if not session.get("admin_logged_in"):
@@ -838,6 +975,7 @@ def get_all_users():
         page = int(request.args.get('page', 1))
         limit = int(request.args.get('limit', 10))
         search = request.args.get('search', '')
+        include_location = request.args.get('include_location', 'true').lower() == 'true'
         
         # Build query
         query = {}
@@ -846,7 +984,8 @@ def get_all_users():
                 "$or": [
                     {"name": {"$regex": search, "$options": "i"}},
                     {"email": {"$regex": search, "$options": "i"}},
-                    {"phone": {"$regex": search, "$options": "i"}}
+                    {"phone": {"$regex": search, "$options": "i"}},
+                    {"address": {"$regex": search, "$options": "i"}}
                 ]
             }
         
@@ -866,6 +1005,15 @@ def get_all_users():
                 user['createdAt'] = user['createdAt'].isoformat()
             if user.get('lastLoginAt'):
                 user['lastLoginAt'] = user['lastLoginAt'].isoformat()
+            if user.get('locationCapturedAt'):
+                user['locationCapturedAt'] = user['locationCapturedAt'].isoformat()
+            
+            # Add location summary
+            user['hasLocation'] = bool(user.get('latitude') and user.get('longitude'))
+            
+            # Remove coordinates field if not needed (it's large)
+            if not include_location and 'coordinates' in user:
+                user.pop('coordinates', None)
         
         return jsonify({
             "success": True,
@@ -875,6 +1023,10 @@ def get_all_users():
                 "page": page,
                 "limit": limit,
                 "total_pages": (total_count + limit - 1) // limit
+            },
+            "location_stats": {
+                "users_with_location": len([u for u in users if u.get('hasLocation')]),
+                "users_without_location": len([u for u in users if not u.get('hasLocation')])
             }
         }), 200
         
@@ -885,3 +1037,47 @@ def get_all_users():
     except Exception as e:
         logger.error(f"Get all users error: {str(e)}")
         return jsonify({"success": False, "message": "Failed to get users", "error": str(e)}), 500
+
+
+@auth_bp.route("/api/user/profile", methods=["GET"])
+def get_current_user_profile():
+    """Get current authenticated user's profile"""
+    try:
+        token = request.headers.get('Authorization')
+        if not token:
+            return jsonify({"success": False, "message": "Token missing"}), 401
+        
+        if token.startswith('Bearer '):
+            token = token[7:]
+        
+        payload = jwt.decode(token, JWT_SECRET_KEY, algorithms=['HS256'])
+        user_id = payload.get('userId')
+        
+        if not user_id:
+            return jsonify({"success": False, "message": "Invalid token"}), 401
+        
+        user = users_collection.find_one({"userId": user_id}, {"passwordHash": 0})
+        if not user:
+            return jsonify({"success": False, "message": "User not found"}), 404
+        
+        # Clean up user data
+        user.pop('_id', None)
+        if user.get('createdAt'):
+            user['createdAt'] = user['createdAt'].isoformat()
+        if user.get('lastLoginAt'):
+            user['lastLoginAt'] = user['lastLoginAt'].isoformat()
+        if user.get('locationCapturedAt'):
+            user['locationCapturedAt'] = user['locationCapturedAt'].isoformat()
+        
+        return jsonify({
+            "success": True,
+            "user": user
+        }), 200
+        
+    except jwt.ExpiredSignatureError:
+        return jsonify({"success": False, "message": "Token expired"}), 401
+    except jwt.InvalidTokenError:
+        return jsonify({"success": False, "message": "Invalid token"}), 401
+    except Exception as e:
+        logger.error(f"Get profile error: {str(e)}")
+        return jsonify({"success": False, "message": "Failed to get profile", "error": str(e)}), 500
