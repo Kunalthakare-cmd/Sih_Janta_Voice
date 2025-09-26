@@ -303,6 +303,7 @@ import re
 import jwt
 from collections import Counter
 
+
 # Setup logging
 logger = logging.getLogger(__name__)
 
@@ -1882,3 +1883,152 @@ def get_community_stats():
             "message": "Failed to fetch community statistics", 
             "error": str(e)
         }), 500
+
+        # Add this new route to your complaint_routes.py file
+
+@complaint_routes.route("/api/voice-analysis", methods=["POST"])
+def voice_analysis():
+    """
+    Handles voice complaint analysis only - returns structured data without submission
+    This endpoint runs the voice bot conversation and returns analysis results
+    """
+    try:
+        # Get user information from token
+        user_info = get_user_from_token(request)
+        
+        if not user_info or not user_info['userId']:
+            return jsonify({
+                "status": "error", 
+                "message": "Authentication required for voice analysis"
+            }), 401
+
+        logger.info(f"Voice analysis started for user: {user_info['name']} ({user_info['userId']})")
+
+        # Import the voice analysis system
+        try:
+            import sys
+            import os
+            # Add the voice complaint handler path
+            voice_handler_path = os.path.join(os.path.dirname(__file__), '..', 'voice_complaint')
+            sys.path.append(voice_handler_path)
+            
+            from voice_bot.jantavoice import start_conversation
+        except ImportError as e:
+            logger.error(f"Failed to import voice analysis module: {e}")
+            return jsonify({
+                "status": "error",
+                "message": "Voice analysis system not available",
+                "error": str(e)
+            }), 503
+
+        # Run the voice conversation analysis
+        logger.info("Starting voice conversation analysis...")
+        
+        try:
+            result = start_conversation()
+        except Exception as e:
+            logger.error(f"Voice conversation error: {e}")
+            return jsonify({
+                "status": "error",
+                "message": "Voice analysis failed during conversation",
+                "error": str(e)
+            }), 500
+
+        if not result:
+            logger.warning("Voice analysis returned no result")
+            return jsonify({
+                "status": "error",
+                "message": "Voice analysis failed - no response from voice system"
+            }), 500
+
+        if result.get("status") != "success":
+            logger.warning(f"Voice analysis failed: {result.get('message')}")
+            return jsonify({
+                "status": "error",
+                "message": result.get("message", "Voice analysis failed"),
+                "error": result.get("error")
+            }), 500
+
+        # Extract the analysis data
+        analysis_data = result.get("data", {})
+        
+        # Enhance the response with additional metadata
+        enhanced_response = {
+            "status": "success",
+            "message": "Voice analysis completed successfully",
+            "data": {
+                # Hindi keys from voice system
+                "शिकायत": analysis_data.get("शिकायत", ""),
+                "विवरण": analysis_data.get("विवरण", ""),
+                "विभाग": analysis_data.get("विभाग", "सामान्य प्रशासन"),
+                "प्राथमिकता": analysis_data.get("प्राथमिकता", "medium"),
+                "स्थान": analysis_data.get("स्थान", ""),
+                
+                # English keys for frontend compatibility
+                "complaint": analysis_data.get("complaint", ""),
+                "description": analysis_data.get("description", ""),
+                "department": analysis_data.get("department", "सामान्य प्रशासन"),
+                "priority": analysis_data.get("priority", "medium"),
+                "location": analysis_data.get("location", ""),
+                
+                # Additional metadata
+                "conversation_summary": analysis_data.get("conversation_summary", ""),
+                "conversation_history": analysis_data.get("conversation_history", []),
+                "timestamp": analysis_data.get("timestamp"),
+                "analysis_completed_at": datetime.now().isoformat(),
+                "analyzed_for_user": user_info['userId'],
+                "user_name": user_info['name']
+            }
+        }
+
+        # Log successful analysis
+        complaint_preview = analysis_data.get("complaint", "")[:100]
+        logger.info(f"Voice analysis completed for {user_info['name']}: {complaint_preview}... -> {analysis_data.get('department')} ({analysis_data.get('priority')})")
+
+        return jsonify(enhanced_response), 200
+
+    except Exception as e:
+        logger.error(f"Voice analysis endpoint error: {str(e)}")
+        traceback.print_exc()
+        return jsonify({
+            "status": "error",
+            "message": "Voice analysis system error", 
+            "error": str(e)
+        }), 500
+
+
+# Also update the existing voice-complaint endpoint to redirect to the new flow
+@complaint_routes.route("/api/voice-complaint", methods=["POST"])
+def voice_complaint_deprecated():
+    """
+    DEPRECATED: Legacy voice complaint endpoint
+    This endpoint is deprecated in favor of the new two-step process:
+    1. /api/voice-analysis (for voice processing)
+    2. /api/complaint (for final submission with location/photo)
+    """
+    try:
+        # Log deprecation warning
+        logger.warning("DEPRECATED: /api/voice-complaint endpoint called - should use /api/voice-analysis + /api/complaint")
+        
+        # Get user info for logging
+        user_info = get_user_from_token(request)
+        if user_info:
+            logger.warning(f"User {user_info['name']} is using deprecated voice complaint endpoint")
+        
+        return jsonify({
+            "status": "error",
+            "message": "This endpoint is deprecated. Please use the new voice analysis flow.",
+            "deprecated": True,
+            "new_endpoints": {
+                "voice_analysis": "/api/voice-analysis",
+                "complaint_submission": "/api/complaint"
+            }
+        }), 410  # 410 Gone - indicates deprecated endpoint
+
+    except Exception as e:
+        logger.error(f"Deprecated voice complaint endpoint error: {str(e)}")
+        return jsonify({
+            "status": "error",
+            "message": "Endpoint deprecated and unavailable",
+            "error": str(e)
+        }), 410
